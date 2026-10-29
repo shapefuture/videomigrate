@@ -38,6 +38,17 @@ Lesson 1 was already uploaded in the earlier private repository. Start batches a
 - **YouTube unlisted:** the upload code is covered by offline tests only. Run one `youtube-private-upload` before using batches.
 - **Rumble unlisted:** the form selector `label[for="visibility_unlisted"]` and the owner-dashboard label `visibility: unlisted` are guesses based on the earlier Private flow. The uploader stops before final Submit if they do not match, so check one run in preview and then one real lesson carefully.
 
+## Transcripts
+
+`transcribe-lessons` makes clean `.txt` transcripts for uploaded lessons:
+
+1. It tries the YouTube caption track first. This needs `YT_MANAGE_REFRESH_TOKEN` with the `youtube.force-ssl` scope.
+2. With `rustasr_fallback=true`, a lesson without usable captions is transcribed from the original Mail.ru MP4 by [RustASR](https://github.com/askidmobile/rustasr) (`rustasr transcribe`, Whisper large-v3-turbo on CPU).
+
+The RustASR commit and its `candle` fork are pinned in the workflow's `env`. Transcripts are uploaded as the `lesson-transcripts` artifact and are not committed.
+
+CPU transcription is slow: a two-hour lesson can take many hours on a standard runner. The job's 350-minute limit may not be enough for long lessons, so run them in small batches (`limit` 1 to 3). Lessons without captions stay pending and are not written as empty files.
+
 ## Tests
 
 ```bash
