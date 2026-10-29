@@ -14,3 +14,7 @@ youtube-private-receipt.json
 __pycache__/
 .pytest_cache/
 .venv/
+# Transcripts are uploaded as workflow artifacts, never committed
+transcripts/
+# Local RustASR model weights
+models/

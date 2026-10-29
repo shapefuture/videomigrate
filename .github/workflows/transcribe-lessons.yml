@@ -1,0 +1,139 @@
+name: Transcribe lessons (captions first, RustASR fallback, no commits)
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_run_id:
+        description: 'Successful course-discover run ID that holds the mailru-course-manifest artifact'
+        type: string
+        required: true
+      sequence:
+        description: 'First lesson number (1-based)'
+        type: number
+        required: true
+        default: 1
+      limit:
+        description: 'Number of lessons (1-10)'
+        type: number
+        required: true
+        default: 1
+      rustasr_fallback:
+        description: 'Transcribe the original MP4 with RustASR when YouTube captions are unavailable (slow on CPU)'
+        type: boolean
+        required: true
+        default: true
+      model:
+        description: 'Hugging Face model repo for RustASR (whisper type)'
+        type: string
+        required: true
+        default: 'openai/whisper-large-v3-turbo'
+      language:
+        description: 'Spoken language code'
+        type: string
+        required: true
+        default: 'ru'
+
+permissions:
+  contents: read
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    # Public repositories allow up to 6 hours per job.
+    timeout-minutes: 350
+    env:
+      # Pinned so results are reproducible. Update deliberately after reviewing changes.
+      RUSTASR_REF: 73c04c89f6d3cfe708e41c91ce76a3b99f3e70c4
+      CANDLE_REF: 05aa926ade5d86955cc9927dff59bde0cd2a5ce9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download reviewed course manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: mailru-course-manifest
+          run-id: ${{ inputs.manifest_run_id }}
+          github-token: ${{ github.token }}
+          path: .
+
+      - name: Install Python and system dependencies
+        run: |
+          python -m pip install 'requests>=2.32,<3' 'google-api-python-client>=2.100,<3' \
+            'google-auth>=2,<3' 'huggingface_hub>=0.25,<2'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Check out RustASR (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: askidmobile/rustasr
+          ref: ${{ env.RUSTASR_REF }}
+          path: rustasr
+          persist-credentials: false
+
+      - name: Check out candle fork next to RustASR (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: askidmobile/candle
+          ref: ${{ env.CANDLE_REF }}
+          path: candle-fork
+          persist-credentials: false
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rustasr/target
+          key: rustasr-${{ env.RUSTASR_REF }}-${{ env.CANDLE_REF }}-${{ runner.os }}
+
+      - name: Build RustASR CLI (release, CPU)
+        working-directory: rustasr
+        run: cargo build --release -p asr-cli
+
+      - name: Cache Whisper model
+        uses: actions/cache@v4
+        with:
+          path: models/whisper
+          key: whisper-${{ inputs.model }}-${{ runner.os }}
+
+      - name: Download model weights
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f models/whisper/config.json ]]; then
+            python rustasr/scripts/download_model.py --model "$MODEL" --output models/whisper
+          fi
+          test -d models/whisper
+
+      - name: Archive transcripts (captions first; RustASR fallback if enabled)
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_MANAGE_REFRESH_TOKEN: ${{ secrets.YT_MANAGE_REFRESH_TOKEN }}
+          RUSTASR_BIN: ${{ github.workspace }}/rustasr/target/release/rustasr
+          FALLBACK: ${{ inputs.rustasr_fallback }}
+          LANGUAGE: ${{ inputs.language }}
+        run: |
+          set -euo pipefail
+          args=(--manifest course_manifest.json --sequence "${{ inputs.sequence }}" --limit "${{ inputs.limit }}"
+                --rustasr-bin "$RUSTASR_BIN" --model-dir models/whisper --language "$LANGUAGE")
+          if [[ "$FALLBACK" == "true" ]]; then args+=(--rustasr-fallback); fi
+          python transcripts_archive.py "${args[@]}"
+
+      - name: Upload transcripts as a run artifact (not committed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lesson-transcripts
+          path: transcripts/**/*.txt
+          retention-days: 30
+          if-no-files-found: ignore
