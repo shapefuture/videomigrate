@@ -1,0 +1,16 @@
+# Credentials and browser sessions must never be committed
+client_secret.json
+*token*.json
+.env
+.env.*
+.private_browser_sessions/
+screenshots/
+downloads/
+*.mp4
+*.part
+# Generated at runtime by course_discover.py, uploaded as a workflow artifact
+course_manifest.json
+youtube-private-receipt.json
+__pycache__/
+.pytest_cache/
+.venv/

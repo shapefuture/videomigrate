@@ -1,0 +1,44 @@
+name: Discover Mail.ru course videos (preview only)
+on:
+  push:
+    paths:
+      - '.github/workflows/course-discover.yml'
+  workflow_dispatch:
+    inputs:
+      folder_url:
+        description: 'Mail.ru course folder share URL'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: Discover ordered videos (NO YouTube upload)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependency
+        run: python -m pip install 'requests>=2.32,<3'
+      - name: Discover and sort all course videos
+        shell: bash
+        env:
+          INPUT_FOLDER: ${{ inputs.folder_url }}
+          VAR_FOLDER: ${{ vars.MAILRU_FOLDER_URL }}
+        run: |
+          set -euo pipefail
+          FOLDER="${INPUT_FOLDER:-$VAR_FOLDER}"
+          [[ -n "$FOLDER" ]] || { echo '::error::Set repo variable MAILRU_FOLDER_URL or pass folder_url'; exit 1; }
+          python course_discover.py --folder-url "$FOLDER" --output course_manifest.json
+      - name: Upload batch manifest for review (NO video files)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mailru-course-manifest
+          path: course_manifest.json
+          retention-days: 30
+          if-no-files-found: error

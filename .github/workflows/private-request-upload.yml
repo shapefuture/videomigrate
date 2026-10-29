@@ -1,0 +1,77 @@
+name: Authorized UNLISTED batch request
+on:
+  push:
+    paths:
+      - 'batch_requests/*.json'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: mailru-private-batch-ledger
+  cancel-in-progress: false
+
+jobs:
+  requested-unlisted-upload:
+    name: Unlisted-only upload from approved request
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 2
+      - name: Validate exact newly added upload request
+        id: request
+        run: python private_request_validate.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download frozen course manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: mailru-course-manifest
+          run-id: ${{ steps.request.outputs.manifest_run_id }}
+          github-token: ${{ github.token }}
+          path: .
+      - name: Install upload dependencies
+        run: |
+          python -m pip install 'requests>=2.32,<3' 'google-api-python-client>=2.100,<3' 'google-auth>=2,<3'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Require owner-provided OAuth secrets
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$YT_CLIENT_ID" && -n "$YT_CLIENT_SECRET" && -n "$YT_REFRESH_TOKEN" ]] || {
+            echo "No video uploaded. Owner must configure all three GitHub repository OAuth secrets first."
+            exit 1
+          }
+      - name: Upload exactly the authorized lessons as UNLISTED
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          START: ${{ steps.request.outputs.start }}
+          COUNT: ${{ steps.request.outputs.count }}
+          CONFIRM_UNLISTED_UPLOAD: 'YES'
+          RECEIPT_GIT_PUSH: 'YES'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python course_batch_private.py --manifest course_manifest.json --start "$START" --count "$COUNT" --execute
+      - name: Preserve receipts even on error
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mailru-private-request-receipts
+          path: |
+            receipts/*.json
+            youtube-private-receipt.json
+          retention-days: 30
+          if-no-files-found: ignore

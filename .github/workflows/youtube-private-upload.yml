@@ -1,0 +1,60 @@
+name: Manual Mail.ru to YouTube UNLISTED upload
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: YouTube video title
+        required: false
+        type: string
+        default: 'Untitled upload'
+
+permissions:
+  contents: read
+
+jobs:
+  upload-unlisted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install 'requests>=2.32,<3' 'google-api-python-client>=2.100,<3' 'google-auth>=2,<3'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Check YouTube OAuth secrets
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$YT_CLIENT_ID" && -n "$YT_CLIENT_SECRET" && -n "$YT_REFRESH_TOKEN" ]] || { echo 'Configure YT_CLIENT_ID, YT_CLIENT_SECRET and YT_REFRESH_TOKEN first'; exit 1; }
+      - name: Download selected MP4
+        env:
+          VIDEO_SOURCE_URL: ${{ vars.MAILRU_SOURCE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$VIDEO_SOURCE_URL" ]] || { echo '::error::Set repo variable MAILRU_SOURCE_URL'; exit 1; }
+          python mailru_fetch.py --url "$VIDEO_SOURCE_URL" --output downloads/original.mp4
+      - name: Upload UNLISTED to YouTube
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          VIDEO_TITLE: ${{ inputs.title }}
+          VIDEO_PATH: downloads/original.mp4
+        run: python youtube_private_upload.py
+      - name: Save unlisted YouTube receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-private-receipt
+          path: youtube-private-receipt.json
+          if-no-files-found: ignore
+          retention-days: 7

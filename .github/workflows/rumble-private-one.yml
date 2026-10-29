@@ -1,0 +1,139 @@
+name: Rumble ONE UNLISTED course lesson (MANUAL)
+run-name: ${{ inputs.mode == 'preview' && 'RUMBLE COURSE PREVIEW - NO UPLOAD' || 'MANUAL RUMBLE UNLISTED LESSON - TERMS AUTHORIZED' }}
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Preview does not use cookies/upload; upload_unlisted attempts one lesson'
+        type: choice
+        required: true
+        default: preview
+        options:
+          - preview
+          - upload_unlisted
+      confirm_rights:
+        description: 'I confirm I may distribute this course video and have no conflicting exclusive license'
+        type: boolean
+        required: true
+        default: false
+      accept_rumble_terms_2026:
+        description: 'I read and accept Rumble terms (updated September 1, 2026) for this upload'
+        type: boolean
+        required: true
+        default: false
+      sequence:
+        description: 'Lesson sequence to upload (2 or higher; lesson 1 is already on Rumble)'
+        type: number
+        required: true
+        default: 2
+      confirm_unlisted:
+        description: 'I authorize exactly this one lesson uploaded to Rumble UNLISTED (anyone with the link)'
+        type: boolean
+        required: true
+        default: false
+      confirm_rotated_session:
+        description: 'I replaced the previously exposed Rumble session with newly issued credentials'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mailru-private-batch-ledger
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Review mode and require separate legal confirmations before any media transfer
+        env:
+          MODE: ${{ inputs.mode }}
+          RIGHTS: ${{ inputs.confirm_rights }}
+          TERMS: ${{ inputs.accept_rumble_terms_2026 }}
+          UNLISTED: ${{ inputs.confirm_unlisted }}
+          ROTATED: ${{ inputs.confirm_rotated_session }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" == "upload_unlisted" ]]; then
+            [[ "$RIGHTS" == true && "$TERMS" == true && "$UNLISTED" == true && "$ROTATED" == true ]] || {
+              echo "::error::Rights, updated Rumble terms, unlisted upload and fresh session must all be explicitly approved"
+              exit 1
+            }
+          fi
+      - name: Build course manifest from the Mail.ru folder
+        env:
+          MAILRU_FOLDER_URL: ${{ vars.MAILRU_FOLDER_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$MAILRU_FOLDER_URL" ]] || { echo '::error::Set repo variable MAILRU_FOLDER_URL'; exit 1; }
+          python -m pip install 'requests>=2.32,<3'
+          python course_discover.py --folder-url "$MAILRU_FOLDER_URL" --output course_manifest.json
+      - name: Preview original lesson title and rights-gated upload intent
+        if: inputs.mode == 'preview'
+        run: |
+          python rumble_private_one.py --sequence ${{ inputs.sequence }}
+          echo '## PREVIEW ONLY - NO TRANSFER AND NO SUBMIT' >> "$GITHUB_STEP_SUMMARY"
+      - name: Install Chrome controller and MP4 validator (ffprobe)
+        if: inputs.mode == 'upload_unlisted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'playwright>=1.48,<3' 'requests>=2.32,<3'
+          command -v google-chrome || command -v google-chrome-stable
+          # GitHub runners normally have cached APT indexes. Avoid slow
+          # unconditional apt-get update; refresh only if install needs it.
+          if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg; then
+            timeout 90s sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg
+          fi
+          command -v ffprobe
+          ffprobe -version | sed -n '1p'
+          echo 'ffprobe is installed before downloading the Mail.ru original.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload exactly one unlisted lesson only after rights/terms authorization
+        if: inputs.mode == 'upload_unlisted'
+        env:
+          RUMBLE_BROWSER_STATE_B64: ${{ secrets.RUMBLE_BROWSER_STATE_B64 }}
+          RUMBLE_CONFIRM_RIGHTS: 'YES'
+          RUMBLE_CONFIRM_TERMS_2026: 'YES'
+          RUMBLE_CONFIRM_UNLISTED_UPLOAD: 'YES'
+        run: |
+          set -euo pipefail
+          python rumble_private_one.py --sequence ${{ inputs.sequence }} --execute
+      - name: Preserve first or ambiguous submission receipt and prevent duplicate retries
+        if: always() && inputs.mode == 'upload_unlisted'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if compgen -G 'backups/rumble/*.json' > /dev/null; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add backups/rumble/*.json
+            git commit -m 'Record Rumble unlisted one-lesson attempt for manual verification' || true
+            git push origin HEAD:main
+            echo '## Check Rumble Studio and the receipt before any retry' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## No Rumble submission receipt was created' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Save submission receipt as run artifact even if git push fails
+        if: always() && inputs.mode == 'upload_unlisted'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumble-private-one-manual-review
+          path: backups/rumble/*.json
+          if-no-files-found: ignore
+          retention-days: 30
+

@@ -1,0 +1,77 @@
+name: Rumble one-lesson guards (NO UPLOAD)
+on:
+  push:
+    paths:
+      - '.github/workflows/rumble-private-ci.yml'
+      - 'rumble_private_one.py'
+      - 'browser_state.py'
+      - '.github/workflows/rumble-private-one.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'PyYAML>=6,<7' 'requests>=2.32,<3'
+      - name: Validate manual-only legal gates and run zero-network preview
+        run: |
+          python -m py_compile rumble_private_one.py
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          w=yaml.safe_load(Path('.github/workflows/rumble-private-one.yml').read_text())
+          trigger=w.get('on',w.get(True))
+          assert 'push' not in trigger
+          inputs=trigger['workflow_dispatch']['inputs']
+          assert inputs['mode']['default']=='preview'
+          assert inputs['confirm_rights']['default'] is False
+          assert inputs['accept_rumble_terms_2026']['default'] is False
+          assert inputs['confirm_unlisted']['default'] is False
+          s=Path('rumble_private_one.py').read_text()
+          assert 'visibility_unlisted' in s
+          assert 'visibility_private' not in s
+          assert 'RUMBLE_CONFIRM_RIGHTS' in s
+          assert 'RUMBLE_CONFIRM_TERMS_2026' in s
+          assert 'choose_HowTo_category' in s
+          assert 'advance_metadata_to_license_step' in s
+          assert 'select_personal_use_nonexclusive' in s
+          assert '#submitForm2' in s
+          assert 'diagnostic_complete_NO_FINAL_SUBMIT' in s
+          assert 'safe_writable_receipt(out,report)' in s
+          PY
+          python rumble_private_one.py --help > /dev/null
+          echo '## OFFLINE GUARDS PASSED - NO UPLOAD' >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke-test MP4 validation with real ffprobe on a synthetic video
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub runners normally have cached APT indexes. Avoid slow
+          # unconditional apt-get update; refresh only if install needs it.
+          if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg; then
+            timeout 90s sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg
+          fi
+          command -v ffprobe
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          from mailru_fetch import probe_video
+          with tempfile.TemporaryDirectory(prefix="rumble-ffprobe-ci-") as d:
+              path = Path(d) / "synthetic.mp4"
+              subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                              "-y", "-f", "lavfi", "-i",
+                              "color=c=black:s=160x120:r=10:d=1", "-an",
+                              "-c:v", "mpeg4", str(path)], check=True)
+              media = probe_video(path)
+              assert any(s.get("codec_type") == "video" for s in media["streams"])
+              print("PASS: actual ffprobe parsed generated MP4 video stream.")
+              print("No Mail.ru original downloaded and no Rumble upload performed.")
+          PY
+          echo '## Real ffprobe synthetic-MP4 smoke test PASSED; no upload' >> "$GITHUB_STEP_SUMMARY"
